@@ -9,7 +9,8 @@ It supports playing a wide variety of file formats including wav, mp3, wma, ogg.
 The purpose of the project is to musically surprise the recipient. 
 
 ## Installation and Setup
-See Wiki page
+See Wiki page for images, video, and construction details.
+https://github.com/ckartchner/Music-Player/wiki
 
 ## License
 MIT license
