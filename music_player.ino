@@ -12,11 +12,18 @@
   Outline for player began with Adafruit VS1053 example code, player_simple
   Written by Limor Fried/Ladyada for Adafruit Industries.
   
-  Thanks to Puck on StackOverflow for random file code:
+  Thanks to Puck on StackOverflow for random file implementation:
   https://stackoverflow.com/questions/26002991/arduino-random-file-on-sd-rewinddirectory
 
-  The random file code originally fitered by extension. 
-  Extension checking commented out in this version to allow mixed file usage. 
+  Sections user will want to consider editing:
+  - User editable globals section
+  - Files played. Obviously not everyone will have the same files. 
+  - All code pertaining to the use of an LSM303 for shake detection as there are many ways to do this.
+
+  Known issues:
+  -Higher bitrate wav files will not play correctly with many microcontrollers due to a slower clock rate that cannot keep up. 
+  Consider converting the wav to a compressed format for better performance. 
+
  ****************************************************/
 
 // include SPI, MP3 and SD libraries
@@ -26,8 +33,6 @@
 #include <Wire.h>
 #include <LSM303.h>
 
-LSM303 compass; 
-
 // These are the pins used for the breakout
 #define BREAKOUT_RESET  9      // VS1053 reset pin (output)
 #define BREAKOUT_CS     10     // VS1053 chip select pin (output)
@@ -36,25 +41,34 @@ LSM303 compass;
 // DREQ should be an Int pin, see http://arduino.cc/en/Reference/attachInterrupt
 #define DREQ 3       // VS1053 Data request, ideally an Interrupt pin
 
-// Setup switches
+// Trigger pin setup
 const int lidSwitch = 0;
+
+// User editable globals
 const int amag_trigger = 1.3; //This should be tested at final location before use. Sensitivity may vary between environments.  
+const int vol = 30; //Volume. Lower number -> louder volume. 
 
-Adafruit_VS1053_FilePlayer musicPlayer =
-  // create breakout-example object!
-  Adafruit_VS1053_FilePlayer(BREAKOUT_RESET, BREAKOUT_CS, BREAKOUT_DCS, DREQ, CARDCS);
+// Files played. Should be edited by end user. 
+const char trigger_audio[] = "Tron//17DISC~1.WMA"; //File played when switch is triggered. 
+const char ready_audio[] = "PowUp.wma"; //Audio played when signaling the packge is ready to be triggered on opening. 
+const char shake_audio[] = "meow~1.fla"; //Audio played when shaking is triggered
+const char random_dir[] = "wavs/";  //Folder containing random file clips
 
+// Initialize musicplayer object
+Adafruit_VS1053_FilePlayer musicPlayer = Adafruit_VS1053_FilePlayer(BREAKOUT_RESET, BREAKOUT_CS, BREAKOUT_DCS, DREQ, CARDCS);
+
+// Initialize accelerometer object
+LSM303 compass; 
+
+// Global variables. 
 int lss = 0;      //lid switch state
 int n_files = 0;  //number of files counted by countFiles
 int rcnt = 0;     //Tracker for number of random counts played.
 float amag = 0.0; //accelerometer magnitude
 
-char wav_folder[] = "wavs/"; 
-char extension[] = "WAV"; //This is oddly case sensitive!!! Doesn't work if lower case.
-
 void setup() {
   Serial.begin(9600);
-  Serial.println("...and so it begins.");
+  Serial.println("Initializing music player");
   Wire.begin();
 
   //Initialize LSM303 for accelerometer (shaking) readings
@@ -70,48 +84,43 @@ void setup() {
   }
   Serial.println(F("VS1053 found"));
 
-  //SD.being() needs to be called before doing other SD card communication!
+  //SD.begin() needs to be called before doing other SD card communication!
   if (!SD.begin(CARDCS)) {
     Serial.println(F("SD failed, or not present"));
     while (1);  // don't do anything more
   }
 
-  File folder = SD.open(wav_folder);
+  File folder = SD.open(random_dir);
   n_files = countFiles(folder);
   folder.close();
   
-  //NO CLUE WHY, but if I don't have the F() in the Serial.print below, my wave files won't play!
+  //Unclear why, but if F() missing from Serial.print below, files won't play!
   //F() causes flash based memory strings to be used. 
-  Serial.print(F("Number of WAV files: ")); 
+  Serial.print(F("Number of files in random audio dir: ")); 
   Serial.println(n_files);
   
-  // list files
-  // Does not write expected output as currently written, but if some lines above are commented out it is fine.
-  // Something with SD not being reset properly?
-//  printDirectory(SD.open("/"), 0);
+  // list all files on SD card
+  //  printDirectory(SD.open("/"), 0);
 
   // Set volume for left, right channels. lower numbers == louder volume!
-  musicPlayer.setVolume(30, 30);
+  // Remember, what sounds good during testing may not be audible in a loud environment.
+  musicPlayer.setVolume(vol, vol);
 
   // If DREQ is on an interrupt pin (on uno, #2 or #3) we can do background
   // audio playing
   musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);  // DREQ int
 
-  //Print files in the Tron directory
-//  Serial.println(F("LS on directory TRON"));
-//  printDirectory(SD.open("Tron//"), 0);
-
-  // Setup lid switch
+  // Setup trigger switch
   pinMode(lidSwitch, INPUT);
 
-  // Wait a min to get lid closed.
+  // Wait a min to get lid closed. Gives ample time to get setup before trigger is enabled. 
   Serial.println(F("Start of 1 min wait."));
   unsigned long startMillis = millis();
   while (millis() - startMillis < 60000);
   Serial.println(F("End of 1 min wait."));
 
   //play tone announcing the pkg is ready and g2g.
-  musicPlayer.playFullFile("PowUp.wma");
+  musicPlayer.playFullFile(ready_audio);
 
 }
 
@@ -128,12 +137,13 @@ void loop() {
   if (amag > 1.3) { 
     Serial.println(F("Shaking detected!"));
     if (musicPlayer.stopped()) {
-      Serial.println(F("Trying to meow!"));
-      musicPlayer.startPlayingFile("meow~1.fla");
+      Serial.println(F("Trying to play shaking audio"));
+      musicPlayer.startPlayingFile(shake_audio);
     }
   }
   
   //Check if box has been opened
+  //Will interrupt shaking audio if currently playing.
   lss = digitalRead(lidSwitch);
   if (lss == 1){ //Pin goes HIGH when magnet is removed.
     Serial.println(F("Hall Effect switch detected!"));
@@ -143,53 +153,52 @@ void loop() {
     Serial.print(F("Is music playing:")); Serial.println(status);
     musicPlayer.softReset(); //allows for playing with interrupt!
     Serial.println(F("Soft reset preformed"));
-    musicPlayer.playFullFile("Tron//17DISC~1.WMA");
-    randomWav();
+    musicPlayer.playFullFile(trigger_audio);
+    //After trigger music is finished, play random audio.
+    randomAudio();
   }
   delay(500);
 }
 
-//Play a random wav file
-void playRandomWav(){
+// Play a random audio file
+void playRandomAudio(){
   int i, rand_song;  
   rcnt++; 
-  File folder = SD.open(wav_folder);
+  File folder = SD.open(random_dir);
   File random_file;
   rand_song = random(0, n_files)+1;
-  Serial.print(F("Random wav attempt: ")); Serial.println(rcnt);
+  Serial.print(F("Random audio attempt: ")); Serial.println(rcnt);
   Serial.print(F("Random number: ")); Serial.println(rand_song);
   folder.rewindDirectory();  
   random_file = selectFileN(rand_song, folder);
   folder.close();
   Serial.print(F("Trying to play:")); Serial.println(random_file.name());
   //Uncertain if this is the best way to concatenate these strings, but it works!
-  String lstr = String(wav_folder) + String(random_file.name());
+  String lstr = String(random_dir) + String(random_file.name());
   Serial.print(F("Stated playing file:"));
   Serial.println(lstr);
   if(!musicPlayer.playFullFile(lstr.c_str())) {
-    Serial.println(F("Could not open wav file"));
+    Serial.println(F("Could not open audio file"));
   }
   else Serial.println(F("Finished play attempt!"));
   random_file.close();
 
-  //Serial.print("playingMusic= "); Serial.println(musicPlayer.playingMusic);
   Serial.println();
   Serial.println(); 
-  
 }
 
-void randomWav(){
+void randomAudio(){
   double dtime;
 
-  //Unsure if this reset is required, but doesn't seem to cause any problems
-  //Added for meow interrupted corner case
+  //Unsure if this reset is still required, but it doesn't seem to cause any problems
+  //Added when problems seen if the initial shaking audio was inturrupted by lid opening audio. 
   musicPlayer.softReset(); //allows for playing with interrupt!
   Serial.println(F("Soft reset preformed"));
     
-  //Play initial random wav after 3 sec delay so audience knows it exists
+  //Play initial random sound after 3 sec delay so audience knows to expect random audio.
   unsigned long startMillis = millis();
   while (millis() - startMillis < 3000);
-  playRandomWav();
+  playRandomAudio();
 
   //Play audio file after random interval
   while(true) {
@@ -200,13 +209,55 @@ void randomWav(){
     Serial.print(F("Delay time:")); Serial.println(dtime);
     unsigned long startMillis = millis();
     while (millis() - startMillis < dtime);
-    playRandomWav(); 
+    playRandomAudio(); 
   }
   
 }
 
+// Select random file number
+File selectFileN(int number, File dir) {
+  int counter = 0;
+  File return_entry;
+  while(true) {
+    File entry = dir.openNextFile();
+    if (! entry) {
+      Serial.println(F("Last file reached"));
+      dir.rewindDirectory();
+      break;
+    }
+    Serial.println(entry.name());
+    counter++;
+    if(counter==number) {
+      return_entry = entry;
+      dir.rewindDirectory();
+      break;
+    }
+    entry.close();
+  }
+  return return_entry;
+}
+
+// Count the number of files in a given directory
+int countFiles(File dir) {
+  Serial.println(F("Counting files"));
+  int counter = 0;
+  while(true) {
+    File entry = dir.openNextFile();
+    if (! entry) {
+      dir.rewindDirectory();
+      break;
+    }
+    Serial.println(entry.name());
+    counter++;
+    entry.close();
+  }
+  Serial.println("----------------");
+  return counter;
+}
+
 // File listing helper
 // Included with many examples of the Arduino SD library
+// Useful when adding new audio files. 
 void printDirectory(File dir, int numTabs) {
   while (true) {
     File entry =  dir.openNextFile();
@@ -229,54 +280,4 @@ void printDirectory(File dir, int numTabs) {
     }
     entry.close();
   }
-}
-
-//Select random file number
-//Not tested if files with different extensions are included, but should work?
-File selectFileN(int number, File dir) {
-  int counter = 0;
-  File return_entry;
-  while(true) {
-    File entry = dir.openNextFile();
-    if (! entry) {
-      Serial.println(F("Last file reached"));
-      dir.rewindDirectory();
-      break;
-    }
-    Serial.println(entry.name());
-//    if(strstr(entry.name(), extension) != NULL) {
-//      counter++;
-//    }
-    counter++;
-    if(counter==number) {
-      return_entry = entry;
-      dir.rewindDirectory();
-      break;
-    }
-    entry.close();
-  }
-  return return_entry;
-}
-
-//Count the number of files specified by the global extension.
-//Not tested if files with different extensions are included.
-int countFiles(File dir) {
-  Serial.println(F("Counting files"));
-  int counter = 0;
-  while(true) {
-    File entry = dir.openNextFile();
-    if (! entry) {
-      dir.rewindDirectory();
-      break;
-    }
-    Serial.println(entry.name());
-//    //only count files with given extension (.wav)
-//    if(strstr(entry.name(), extension) != NULL) {
-//      counter++;
-//    } 
-    counter++;
-    entry.close();
-  }
-  Serial.println("----------------");
-  return counter;
 }
